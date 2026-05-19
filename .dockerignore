@@ -1,0 +1,7 @@
+.git
+node_modules
+apps/*/node_modules
+.next
+dist
+postgres_data
+*.log

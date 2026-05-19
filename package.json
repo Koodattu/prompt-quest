@@ -1,0 +1,16 @@
+{
+  "name": "prompt-quest",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "bun run --cwd apps/backend dev",
+    "build": "bun run --cwd apps/backend build && bun run --cwd apps/frontend build",
+    "typecheck": "bun run --cwd apps/backend typecheck && bun run --cwd apps/frontend typecheck"
+  },
+  "engines": {
+    "bun": ">=1.2.0"
+  }
+}

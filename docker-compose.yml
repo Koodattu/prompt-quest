@@ -1,0 +1,56 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-promptquest}
+      POSTGRES_USER: ${POSTGRES_USER:-promptquest}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-promptquest}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U promptquest -d promptquest"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-promptquest}:${POSTGRES_PASSWORD:-promptquest}@postgres:5432/${POSTGRES_DB:-promptquest}
+      APP_SECRET: ${APP_SECRET:-change-me-in-production}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      SEED_PARTICIPANT_PASSWORD: ${SEED_PARTICIPANT_PASSWORD:-demo}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-admin-demo}
+      AI_DEBUG_LOGS: ${AI_DEBUG_LOGS:-true}
+      GEMINI_MAX_OUTPUT_TOKENS: ${GEMINI_MAX_OUTPUT_TOKENS:-1400}
+      GEMINI_THINKING_LEVEL: ${GEMINI_THINKING_LEVEL:-minimal}
+      GEMINI_SAFETY_THRESHOLD: ${GEMINI_SAFETY_THRESHOLD:-BLOCK_ONLY_HIGH}
+      PORT: ${BACKEND_PORT:-4000}
+    ports:
+      - "${BACKEND_PORT:-4000}:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: apps/frontend/Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:4000}
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:4000}
+      PORT: 3000
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
