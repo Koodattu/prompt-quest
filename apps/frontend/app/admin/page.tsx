@@ -1,8 +1,9 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
-import { BarChart3, Check, KeyRound, Lock, Plus, RefreshCw, Settings, Shield } from "lucide-react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { BarChart3, Check, KeyRound, Lock, Moon, Plus, RefreshCw, Settings, Sun } from "lucide-react";
 import { apiJson } from "../lib/api";
+import { Theme } from "../lib/i18n";
 
 type Stats = {
   totals: { sessions: number; recentSessions: number; responses: number; attempts: number };
@@ -25,6 +26,7 @@ type Level = {
 };
 type ResponseRow = {
   id: string;
+  groupId: string;
   groupLabel: string;
   presentationScore: number;
   imageAppScore: number;
@@ -44,6 +46,14 @@ type AttemptRow = {
 };
 
 const tokenKey = "promptquest.adminToken";
+const themeKey = "promptquest.theme";
+
+const questionLabels = [
+  ["presentationScore", "Esitys"],
+  ["imageAppScore", "Kuvat"],
+  ["codeAppScore", "Koodi"],
+  ["aiFeelingScore", "AI-fiilis"]
+] as const;
 
 export default function AdminPage() {
   const [token, setToken] = useState("");
@@ -54,17 +64,46 @@ export default function AdminPage() {
   const [responses, setResponses] = useState<ResponseRow[]>([]);
   const [attempts, setAttempts] = useState<AttemptRow[]>([]);
   const [aiProvider, setAiProvider] = useState("google");
+  const [selectedGroup, setSelectedGroup] = useState("all");
   const [newGroup, setNewGroup] = useState({ label: "", password: "" });
+  const [theme, setTheme] = useState<Theme>("dark");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    const savedTheme = localStorage.getItem(themeKey);
+    if (savedTheme === "dark" || savedTheme === "light") setTheme(savedTheme);
     const saved = localStorage.getItem(tokenKey);
     if (saved) {
       setToken(saved);
-      void loadAll(saved);
+      void loadAll(saved).catch(() => {
+        localStorage.removeItem(tokenKey);
+        setToken("");
+      });
     }
   }, []);
+
+  useEffect(() => {
+    document.body.dataset.theme = theme;
+    localStorage.setItem(themeKey, theme);
+  }, [theme]);
+
+  const participantGroups = useMemo(() => passwords.filter((group) => !group.isAdmin), [passwords]);
+  const filteredResponses = useMemo(
+    () => responses.filter((response) => selectedGroup === "all" || response.groupId === selectedGroup),
+    [responses, selectedGroup]
+  );
+  const localAverages = useMemo(() => {
+    return questionLabels.map(([key, label]) => {
+      const total = filteredResponses.reduce((sum, row) => sum + row[key], 0);
+      return {
+        label,
+        value: filteredResponses.length ? total / filteredResponses.length : null
+      };
+    });
+  }, [filteredResponses]);
+  const feedbackTexts = filteredResponses.filter((response) => response.freeText?.trim());
+  const successfulAttempts = attempts.filter((attempt) => attempt.wasSuccessful);
 
   async function login(event: FormEvent) {
     event.preventDefault();
@@ -79,7 +118,7 @@ export default function AdminPage() {
       setToken(data.token);
       await loadAll(data.token);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed");
+      setError(err instanceof Error ? err.message : "Kirjautuminen epäonnistui");
     } finally {
       setBusy(false);
     }
@@ -102,6 +141,15 @@ export default function AdminPage() {
     setAiProvider(settingsData.settings.ai_provider ?? "google");
   }
 
+  async function refresh() {
+    setError("");
+    try {
+      await loadAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Tietojen lataus epäonnistui");
+    }
+  }
+
   async function saveProvider(nextProvider: string) {
     setAiProvider(nextProvider);
     await apiJson("/api/admin/settings", { method: "PATCH", body: JSON.stringify({ aiProvider: nextProvider }) }, token);
@@ -109,6 +157,7 @@ export default function AdminPage() {
 
   async function createPassword(event: FormEvent) {
     event.preventDefault();
+    if (!newGroup.label.trim() || !newGroup.password.trim()) return;
     await apiJson(
       "/api/admin/passwords",
       { method: "POST", body: JSON.stringify({ ...newGroup, isAdmin: false }) },
@@ -132,20 +181,29 @@ export default function AdminPage() {
     await loadAll();
   }
 
+  function switchTheme() {
+    setTheme((current) => (current === "dark" ? "light" : "dark"));
+  }
+
   if (!token) {
     return (
       <main className="shell admin-shell">
-        <section className="panel intro">
+        <header className="topbar">
+          <div className="brand">PromptQuest</div>
+          <button className="icon-only" onClick={switchTheme} type="button" title="Vaihda teemaa">
+            {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+          </button>
+        </header>
+        <section className="panel intro compact-intro">
           <div>
-            <p className="eyebrow">Admin</p>
-            <h1>PromptQuest hallinta</h1>
-            <p>Kirjaudu admin-salasanalla. Oletus kehitysympäristössä on admin-demo.</p>
+            <h1>Hallinta</h1>
+            <p>Kirjaudu admin-salasanalla.</p>
           </div>
           {error ? <div className="alert error">{error}</div> : null}
           <form className="login-form" onSubmit={login}>
             <label>
               <span>Admin-salasana</span>
-              <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" />
+              <input autoFocus value={password} onChange={(event) => setPassword(event.target.value)} type="password" />
             </label>
             <button disabled={busy} type="submit">
               <Lock size={18} />
@@ -160,17 +218,17 @@ export default function AdminPage() {
   return (
     <main className="shell admin-shell">
       <header className="topbar">
-        <div className="brand">
-          <Shield size={22} />
-          <span>PromptQuest Admin</span>
-        </div>
+        <div className="brand">PromptQuest Admin</div>
         <nav className="top-actions">
           <a className="icon-text" href="/">
-            Osallistujanäkymä
+            Osallistuja
           </a>
-          <button className="icon-text" onClick={() => loadAll()} type="button">
+          <button className="icon-text" onClick={refresh} type="button">
             <RefreshCw size={18} />
             Päivitä
+          </button>
+          <button className="icon-only" onClick={switchTheme} type="button" title="Vaihda teemaa">
+            {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
           </button>
           <button
             className="ghost"
@@ -190,7 +248,7 @@ export default function AdminPage() {
       <section className="stats-grid">
         {[
           ["Sessioita", stats?.totals.sessions ?? 0],
-          ["Aktiivisia 15 min", stats?.totals.recentSessions ?? 0],
+          ["Aktiivisia", stats?.totals.recentSessions ?? 0],
           ["Palautteita", stats?.totals.responses ?? 0],
           ["AI-yrityksiä", stats?.totals.attempts ?? 0]
         ].map(([label, value]) => (
@@ -201,53 +259,101 @@ export default function AdminPage() {
         ))}
       </section>
 
-      <section className="panel">
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">Asetukset</p>
-            <h2>AI-palveluntarjoaja</h2>
-          </div>
-          <Settings size={22} />
-        </div>
-        <div className="segmented">
-          {["google", "openai", "mock"].map((provider) => (
-            <button
-              className={aiProvider === provider ? "selected" : ""}
-              key={provider}
-              onClick={() => saveProvider(provider)}
-              type="button"
-            >
-              {provider}
-            </button>
-          ))}
-        </div>
-      </section>
-
-      <section className="admin-grid">
-        <div className="panel">
+      <section className="admin-dashboard">
+        <div className="panel analysis-panel">
           <div className="section-heading">
             <div>
-              <p className="eyebrow">Tulokset</p>
+              <p className="eyebrow">Palaute</p>
               <h2>Keskiarvot</h2>
             </div>
-            <BarChart3 size={22} />
+            <select value={selectedGroup} onChange={(event) => setSelectedGroup(event.target.value)}>
+              <option value="all">Kaikki ryhmät</option>
+              {participantGroups.map((group) => (
+                <option key={group.id} value={group.id}>
+                  {group.label}
+                </option>
+              ))}
+            </select>
           </div>
-          <div className="averages">
-            {Object.entries(stats?.averages ?? {}).map(([key, value]) => (
-              <div key={key}>
-                <span>{key}</span>
-                <strong>{value ? Number(value).toFixed(2) : "-"}</strong>
+          <div className="score-grid">
+            {localAverages.map((item) => (
+              <div className="score-card" key={item.label}>
+                <span>{item.label}</span>
+                <strong>{item.value ? item.value.toFixed(2) : "-"}</strong>
+                <div className="bar">
+                  <span style={{ width: `${item.value ? (item.value / 5) * 100 : 0}%` }} />
+                </div>
               </div>
             ))}
           </div>
-          <div className="table-list">
-            {stats?.levelStats.map((level) => (
-              <div className="table-row" key={level.levelId}>
-                <strong>{level.nameFi}</strong>
-                <span>
-                  Yritykset {level.attempts} · vuodot {level.successes} · suoritukset {level.completions}
-                </span>
-              </div>
+          <div className="feedback-strip">
+            <strong>{filteredResponses.length}</strong>
+            <span>vastausta valinnassa</span>
+            <strong>{feedbackTexts.length}</strong>
+            <span>avointa palautetta</span>
+          </div>
+        </div>
+
+        <div className="panel analysis-panel">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">Haaste</p>
+              <h2>Tasot</h2>
+            </div>
+            <BarChart3 size={22} />
+          </div>
+          <div className="level-stat-list">
+            {stats?.levelStats.map((level) => {
+              const leakRate = level.attempts ? Math.round((level.successes / level.attempts) * 100) : 0;
+              const completionRate = stats.totals.sessions ? Math.round((level.completions / stats.totals.sessions) * 100) : 0;
+              return (
+                <div className="level-stat" key={level.levelId}>
+                  <div>
+                    <strong>{level.nameFi}</strong>
+                    <span>
+                      {level.attempts} yritystä · {level.successes} vuotoa · {level.completions} läpäisyä
+                    </span>
+                  </div>
+                  <div className="dual-bars">
+                    <label>
+                      Vuoto {leakRate}%
+                      <span className="bar">
+                        <span style={{ width: `${leakRate}%` }} />
+                      </span>
+                    </label>
+                    <label>
+                      Läpäisy {completionRate}%
+                      <span className="bar alt">
+                        <span style={{ width: `${completionRate}%` }} />
+                      </span>
+                    </label>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
+      <section className="admin-dashboard lower">
+        <div className="panel">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">Asetukset</p>
+              <h2>Malli</h2>
+            </div>
+            <Settings size={22} />
+          </div>
+          <div className="segmented">
+            {["google", "openai", "mock"].map((provider) => (
+              <button
+                className={aiProvider === provider ? "selected" : ""}
+                key={provider}
+                onClick={() => saveProvider(provider)}
+                type="button"
+              >
+                {provider}
+              </button>
             ))}
           </div>
         </div>
@@ -276,13 +382,15 @@ export default function AdminPage() {
               Lisää
             </button>
           </form>
-          <div className="table-list">
+          <div className="table-list compact-list">
             {passwords.map((group) => (
-              <div className="table-row" key={group.id}>
-                <strong>{group.label}</strong>
-                <span>{group.isAdmin ? "admin" : "participant"}</span>
+              <div className="table-row inline-row" key={group.id}>
+                <div>
+                  <strong>{group.label}</strong>
+                  <span>{group.isAdmin ? "admin" : "osallistuja"}</span>
+                </div>
                 <button onClick={() => togglePassword(group)} type="button">
-                  {group.isActive ? "Poista käytöstä" : "Aktivoi"}
+                  {group.isActive ? "Sulje" : "Avaa"}
                 </button>
               </div>
             ))}
@@ -294,18 +402,18 @@ export default function AdminPage() {
         <div className="section-heading">
           <div>
             <p className="eyebrow">Tasot</p>
-            <h2>AI-haasteen hallinta</h2>
+            <h2>Haasteen hallinta</h2>
           </div>
         </div>
         <div className="level-admin-list">
           {levels.map((level) => (
             <div className="level-editor" key={level.id}>
-              <input value={level.nameFi} onChange={(event) => updateLevel(level, { nameFi: event.target.value })} />
-              <input value={level.nameEn} onChange={(event) => updateLevel(level, { nameEn: event.target.value })} />
-              <input value={level.model} onChange={(event) => updateLevel(level, { model: event.target.value })} />
+              <input defaultValue={level.nameFi} onBlur={(event) => updateLevel(level, { nameFi: event.target.value })} />
+              <input defaultValue={level.nameEn} onBlur={(event) => updateLevel(level, { nameEn: event.target.value })} />
+              <input defaultValue={level.model} onBlur={(event) => updateLevel(level, { model: event.target.value })} />
               <input
-                value={level.hiddenPassword}
-                onChange={(event) => updateLevel(level, { hiddenPassword: event.target.value })}
+                defaultValue={level.hiddenPassword}
+                onBlur={(event) => updateLevel(level, { hiddenPassword: event.target.value })}
               />
               <button onClick={() => updateLevel(level, { isActive: !level.isActive })} type="button">
                 {level.isActive ? <Check size={16} /> : <Lock size={16} />}
@@ -316,45 +424,43 @@ export default function AdminPage() {
         </div>
       </section>
 
-      <section className="admin-grid">
+      <section className="admin-dashboard">
         <div className="panel">
           <div className="section-heading">
             <div>
-              <p className="eyebrow">Palautteet</p>
-              <h2>Viimeisimmät vastaukset</h2>
+              <p className="eyebrow">Avoin palaute</p>
+              <h2>Viimeisimmät</h2>
             </div>
           </div>
           <div className="table-list tall">
-            {responses.map((response) => (
+            {feedbackTexts.map((response) => (
               <div className="table-row" key={response.id}>
                 <strong>{response.groupLabel}</strong>
-                <span>
-                  {response.presentationScore}/{response.imageAppScore}/{response.codeAppScore}/
-                  {response.aiFeelingScore}
-                </span>
-                {response.freeText ? <p>{response.freeText}</p> : null}
+                <p>{response.freeText}</p>
               </div>
             ))}
+            {feedbackTexts.length === 0 ? <p className="empty-list">Ei avointa palautetta.</p> : null}
           </div>
         </div>
 
         <div className="panel">
           <div className="section-heading">
             <div>
-              <p className="eyebrow">AI</p>
-              <h2>Viimeisimmät yritykset</h2>
+              <p className="eyebrow">Onnistuneet promptit</p>
+              <h2>Vuodot</h2>
             </div>
           </div>
           <div className="table-list tall">
-            {attempts.map((attempt) => (
+            {successfulAttempts.map((attempt) => (
               <div className="table-row" key={attempt.id}>
                 <strong>
-                  {attempt.levelNameFi} · {attempt.wasSuccessful ? "onnistui" : "epäonnistui"}
+                  {attempt.levelNameFi} · {attempt.groupLabel}
                 </strong>
                 <span>{attempt.userPrompt}</span>
                 <p>{attempt.aiResponse}</p>
               </div>
             ))}
+            {successfulAttempts.length === 0 ? <p className="empty-list">Ei onnistuneita vuotoja.</p> : null}
           </div>
         </div>
       </section>

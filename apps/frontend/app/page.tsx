@@ -1,14 +1,12 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { Bot, Check, KeyRound, Lock, LogOut, Send, Shield, Sparkles } from "lucide-react";
+import { Bot, Check, KeyRound, Lock, LogOut, Moon, Send, Sparkles, Sun } from "lucide-react";
 import { API_BASE, apiJson } from "./lib/api";
-import { copy, Lang } from "./lib/i18n";
+import { copy, Lang, Theme } from "./lib/i18n";
 
 type Session = {
   sessionId: string;
-  group?: { id: string; label: string };
-  groupLabel?: string;
   questionnaireCompleted: boolean;
 };
 
@@ -25,34 +23,44 @@ type Level = {
 };
 
 type Message = { role: "user" | "ai"; text: string };
+type QuizValue = number | null;
 
 const storageKeys = {
   sessionId: "promptquest.sessionId",
-  lang: "promptquest.lang"
+  lang: "promptquest.lang",
+  theme: "promptquest.theme"
 };
 
 export default function Home() {
   const [lang, setLang] = useState<Lang>("fi");
+  const [theme, setTheme] = useState<Theme>("dark");
   const t = copy[lang];
   const [session, setSession] = useState<Session | null>(null);
   const [password, setPassword] = useState("");
-  const [quiz, setQuiz] = useState([3, 3, 3, 3]);
+  const [quiz, setQuiz] = useState<QuizValue[]>([null, null, null, null]);
   const [freeText, setFreeText] = useState("");
   const [levels, setLevels] = useState<Level[]>([]);
-  const [activeLevelId, setActiveLevelId] = useState<string>("");
+  const [activeLevelId, setActiveLevelId] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [prompt, setPrompt] = useState("");
   const [levelPassword, setLevelPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [celebration, setCelebration] = useState<{ levelName: string; nextLevelId?: string } | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const promptInputRef = useRef<HTMLInputElement>(null);
 
   const activeLevel = useMemo(() => levels.find((level) => level.id === activeLevelId), [levels, activeLevelId]);
+  const quizComplete = quiz.every((value) => value !== null);
+  const isStreaming = busy && messages[messages.length - 1]?.role === "ai";
 
   useEffect(() => {
     const savedLang = localStorage.getItem(storageKeys.lang);
+    const savedTheme = localStorage.getItem(storageKeys.theme);
     if (savedLang === "fi" || savedLang === "en") setLang(savedLang);
+    if (savedTheme === "dark" || savedTheme === "light") setTheme(savedTheme);
+
     const sessionId = localStorage.getItem(storageKeys.sessionId);
     if (sessionId) {
       apiJson<Session>(`/api/session?sessionId=${encodeURIComponent(sessionId)}`)
@@ -65,7 +73,12 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    document.body.dataset.theme = theme;
+    localStorage.setItem(storageKeys.theme, theme);
+  }, [theme]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages]);
 
   function switchLang() {
@@ -74,12 +87,20 @@ export default function Home() {
     localStorage.setItem(storageKeys.lang, next);
   }
 
+  function switchTheme() {
+    setTheme((current) => (current === "dark" ? "light" : "dark"));
+  }
+
   async function loadLevels(sessionId = session?.sessionId) {
-    if (!sessionId) return;
+    if (!sessionId) return [];
     const data = await apiJson<{ levels: Level[] }>(`/api/levels?sessionId=${encodeURIComponent(sessionId)}`);
     setLevels(data.levels);
     const current = data.levels.find((level) => !level.completed && level.unlocked) ?? data.levels[0];
-    setActiveLevelId((previous) => previous || current?.id || "");
+    setActiveLevelId((previous) => {
+      const previousStillValid = data.levels.some((level) => level.id === previous && level.unlocked);
+      return previousStillValid ? previous : current?.id || "";
+    });
+    return data.levels;
   }
 
   async function login(event: FormEvent) {
@@ -104,7 +125,10 @@ export default function Home() {
 
   async function submitQuiz(event: FormEvent) {
     event.preventDefault();
-    if (!session) return;
+    if (!session || !quizComplete) {
+      setError(t.missingQuiz);
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -121,6 +145,7 @@ export default function Home() {
       });
       setSession({ ...session, questionnaireCompleted: true });
       await loadLevels(session.sessionId);
+      setTimeout(() => promptInputRef.current?.focus(), 80);
     } catch (err) {
       setError(err instanceof Error ? err.message : t.error);
     } finally {
@@ -142,7 +167,12 @@ export default function Home() {
       const response = await fetch(`${API_BASE}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: session.sessionId, levelId: activeLevel.id, message: userText })
+        body: JSON.stringify({
+          sessionId: session.sessionId,
+          levelId: activeLevel.id,
+          message: userText,
+          language: lang
+        })
       });
       if (!response.ok || !response.body) {
         const data = await response.json().catch(() => ({}));
@@ -179,6 +209,7 @@ export default function Home() {
       setError(err instanceof Error ? err.message : t.error);
     } finally {
       setBusy(false);
+      setTimeout(() => promptInputRef.current?.focus(), 50);
     }
   }
 
@@ -192,19 +223,27 @@ export default function Home() {
         method: "POST",
         body: JSON.stringify({ sessionId: session.sessionId, password: levelPassword })
       });
-      setNotice(t.unlocked);
+      const nextLevels = await loadLevels(session.sessionId);
+      const currentIndex = nextLevels.findIndex((level) => level.id === activeLevel.id);
+      const nextLevel = nextLevels[currentIndex + 1];
+      setCelebration({
+        levelName: lang === "fi" ? activeLevel.nameFi : activeLevel.nameEn,
+        nextLevelId: nextLevel?.id
+      });
       setLevelPassword("");
       setMessages([]);
-      await loadLevels(session.sessionId);
-      setActiveLevelId((current) => {
-        const currentIndex = levels.findIndex((level) => level.id === current);
-        return levels[currentIndex + 1]?.id ?? current;
-      });
+      setNotice("");
     } catch (err) {
       setError(err instanceof Error ? err.message : t.error);
     } finally {
       setBusy(false);
     }
+  }
+
+  function continueAfterCelebration() {
+    if (celebration?.nextLevelId) setActiveLevelId(celebration.nextLevelId);
+    setCelebration(null);
+    setTimeout(() => promptInputRef.current?.focus(), 80);
   }
 
   function reset() {
@@ -214,6 +253,8 @@ export default function Home() {
     setMessages([]);
     setPassword("");
     setNotice("");
+    setError("");
+    setQuiz([null, null, null, null]);
   }
 
   return (
@@ -223,19 +264,18 @@ export default function Home() {
           <Sparkles size={22} />
           <span>PromptQuest</span>
         </div>
-        <nav className="top-actions">
+        <nav className="top-actions" aria-label="Controls">
           {session ? (
             <button className="icon-text" onClick={reset} type="button">
               <LogOut size={18} />
               {t.logout}
             </button>
           ) : null}
-          <a className="icon-text" href="/admin">
-            <Shield size={18} />
-            {t.admin}
-          </a>
           <button className="ghost" onClick={switchLang} type="button">
             {t.otherLanguage}
+          </button>
+          <button className="icon-only" onClick={switchTheme} type="button" title={theme === "dark" ? t.themeLight : t.themeDark}>
+            {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
           </button>
         </nav>
       </header>
@@ -244,9 +284,8 @@ export default function Home() {
       {notice ? <div className="alert success">{notice}</div> : null}
 
       {!session ? (
-        <section className="panel intro">
+        <section className="panel intro compact-intro">
           <div>
-            <p className="eyebrow">{t.language}</p>
             <h1>{t.passwordTitle}</h1>
             <p>{t.passwordLead}</p>
           </div>
@@ -255,6 +294,7 @@ export default function Home() {
               <span>{t.passwordPlaceholder}</span>
               <input
                 autoComplete="current-password"
+                autoFocus
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 placeholder={t.passwordPlaceholder}
@@ -268,12 +308,9 @@ export default function Home() {
           </form>
         </section>
       ) : !session.questionnaireCompleted ? (
-        <section className="panel">
-          <div className="section-heading">
+        <section className="panel quiz-panel">
+          <div className="section-heading tight-heading">
             <div>
-              <p className="eyebrow">
-                {t.group}: {session.group?.label ?? session.groupLabel}
-              </p>
               <h1>{t.quizTitle}</h1>
               <p>{t.quizLead}</p>
             </div>
@@ -292,17 +329,20 @@ export default function Home() {
                         type="radio"
                         value={value}
                       />
-                      <span>{value}</span>
+                      <span className="scale-number">{value}</span>
+                      <span className="scale-label">{t.scale[value - 1]}</span>
                     </label>
                   ))}
                 </div>
               </fieldset>
             ))}
             <label>
-              <span>{t.freeText}</span>
+              <span>
+                {t.freeText} <small>{t.optional}</small>
+              </span>
               <textarea value={freeText} onChange={(event) => setFreeText(event.target.value)} rows={4} />
             </label>
-            <button disabled={busy} type="submit">
+            <button disabled={busy || !quizComplete} type="submit">
               <Check size={18} />
               {busy ? t.loading : t.submitQuiz}
             </button>
@@ -311,11 +351,12 @@ export default function Home() {
       ) : (
         <section className="challenge-grid">
           <aside className="panel level-list">
-            <p className="eyebrow">
-              {t.group}: {session.group?.label ?? session.groupLabel}
-            </p>
-            <h1>{t.challengeTitle}</h1>
-            <p>{t.challengeLead}</p>
+            <div className="section-heading tight-heading">
+              <div>
+                <h1>{t.challengeTitle}</h1>
+                <p>{t.challengeLead}</p>
+              </div>
+            </div>
             <div className="levels">
               {levels.map((level) => (
                 <button
@@ -326,6 +367,7 @@ export default function Home() {
                     setActiveLevelId(level.id);
                     setMessages([]);
                     setNotice("");
+                    setTimeout(() => promptInputRef.current?.focus(), 80);
                   }}
                   type="button"
                 >
@@ -341,7 +383,7 @@ export default function Home() {
               <>
                 <div className="chat-head">
                   <div>
-                    <p className="eyebrow">Model: {activeLevel.model}</p>
+                    <p className="eyebrow">Level {activeLevel.difficulty}</p>
                     <h2>{lang === "fi" ? activeLevel.nameFi : activeLevel.nameEn}</h2>
                   </div>
                   {activeLevel.completed ? <span className="pill">{t.completed}</span> : null}
@@ -349,11 +391,14 @@ export default function Home() {
                 <p className="hint">
                   {t.hint}: {lang === "fi" ? activeLevel.hintFi : activeLevel.hintEn}
                 </p>
-                <div className="messages">
+                <div className="messages" aria-live="polite">
                   {messages.length === 0 ? <p className="empty">{t.noMessages}</p> : null}
                   {messages.map((message, index) => (
-                    <div className={`message ${message.role}`} key={`${message.role}-${index}`}>
-                      {message.text}
+                    <div className={`message-wrap ${message.role}`} key={`${message.role}-${index}`}>
+                      <span className="message-author">{message.role === "user" ? t.you : t.ai}</span>
+                      <div className={`message ${message.role} ${isStreaming && index === messages.length - 1 ? "streaming" : ""}`}>
+                        {message.text || (message.role === "ai" ? t.aiTyping : "")}
+                      </div>
                     </div>
                   ))}
                   <div ref={bottomRef} />
@@ -361,6 +406,7 @@ export default function Home() {
                 <form className="prompt-row" onSubmit={sendPrompt}>
                   <input
                     disabled={busy || activeLevel.completed}
+                    ref={promptInputRef}
                     value={prompt}
                     onChange={(event) => setPrompt(event.target.value)}
                     placeholder={t.promptPlaceholder}
@@ -387,6 +433,24 @@ export default function Home() {
           </div>
         </section>
       )}
+
+      {celebration ? (
+        <div className="celebration" role="dialog" aria-modal="true" aria-labelledby="level-complete-title">
+          <div className="confetti" aria-hidden="true">
+            {Array.from({ length: 24 }).map((_, index) => (
+              <span key={index} />
+            ))}
+          </div>
+          <div className="celebration-card">
+            <div className="celebration-emoji">🎉</div>
+            <h2 id="level-complete-title">{t.unlocked}</h2>
+            <p>{celebration.levelName}</p>
+            <button onClick={continueAfterCelebration} type="button">
+              {celebration.nextLevelId ? t.nextLevel : t.keepPlaying}
+            </button>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }

@@ -48,7 +48,8 @@ const questionnaireSchema = z.object({
 const chatSchema = z.object({
   sessionId: z.string().min(8).max(120),
   levelId: z.string().min(1).max(120),
-  message: z.string().min(1).max(2000)
+  message: z.string().min(1).max(2000),
+  language: z.enum(["fi", "en"]).default("fi")
 });
 
 function jsonError(message: string, status = 400) {
@@ -222,7 +223,10 @@ app.post("/api/chat", async (c) => {
     new ReadableStream({
       async start(controller) {
         try {
-          for await (const token of streamAiResponse(provider, level, parsed.data.message, { requestId })) {
+          for await (const token of streamAiResponse(provider, level, parsed.data.message, {
+            requestId,
+            language: parsed.data.language
+          })) {
             fullResponse += token;
             controller.enqueue(encoder.encode(`event: token\ndata: ${JSON.stringify({ token })}\n\n`));
           }
@@ -350,8 +354,8 @@ app.get("/api/admin/stats", async (c) => {
       levelId: aiLevels.id,
       nameFi: aiLevels.nameFi,
       nameEn: aiLevels.nameEn,
-      attempts: count(aiAttempts.id),
-      successes: sql<number>`count(${aiAttempts.id}) filter (where ${aiAttempts.wasSuccessful} = true)`,
+      attempts: sql<number>`count(distinct ${aiAttempts.id})`,
+      successes: sql<number>`count(distinct ${aiAttempts.id}) filter (where ${aiAttempts.wasSuccessful} = true)`,
       completions: sql<number>`count(distinct ${aiLevelCompletions.id})`
     })
     .from(aiLevels)
